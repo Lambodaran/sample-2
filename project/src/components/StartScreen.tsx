@@ -1,13 +1,16 @@
+// src/components/StartScreen.tsx (REVISED)
+
 import { useState } from 'react';
 import { Sparkles, Trophy } from 'lucide-react';
-import { DifficultyLevel } from '../lib/supabase';
+import { DifficultyLevel } from '../lib/supabase'; // Assuming DifficultyLevel is imported here
 
 interface StartScreenProps {
-  onStart: (name: string, difficulty: DifficultyLevel) => void;
+  // onStart now only needs the difficulty
+  onStart: (difficulty: DifficultyLevel) => void; 
+  onLogout: () => void; // Add a logout function for convenience
 }
 
-export default function StartScreen({ onStart }: StartScreenProps) {
-  const [playerName, setPlayerName] = useState('');
+export default function StartScreen({ onStart, onLogout }: StartScreenProps) {
   const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyLevel | null>(null);
 
   const difficulties: { level: DifficultyLevel; time: number; color: string; description: string }[] = [
@@ -17,15 +20,24 @@ export default function StartScreen({ onStart }: StartScreenProps) {
   ];
 
   const handleStart = () => {
-    if (playerName.trim() && selectedDifficulty) {
-      onStart(playerName.trim(), selectedDifficulty);
+    if (selectedDifficulty) {
+      onStart(selectedDifficulty);
     }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-yellow-400 via-orange-400 to-yellow-500 flex items-center justify-center p-4">
       <div className="max-w-2xl w-full">
-        <div className="bg-white rounded-3xl shadow-2xl p-8 md:p-12 transform hover:scale-[1.01] transition-transform duration-300">
+        <div className="bg-white rounded-3xl shadow-2xl p-8 md:p-12 transform hover:scale-[1.01] transition-transform duration-300 relative">
+            
+            {/* Logout Button */}
+            <button 
+                onClick={onLogout}
+                className="absolute top-4 right-4 text-sm text-gray-500 hover:text-red-500 transition font-medium"
+            >
+                Log Out
+            </button>
+            
           <div className="text-center mb-8">
             <div className="inline-flex items-center gap-3 mb-4 animate-bounce">
               <Sparkles className="w-10 h-10 text-yellow-500" />
@@ -38,20 +50,7 @@ export default function StartScreen({ onStart }: StartScreenProps) {
           </div>
 
           <div className="space-y-6">
-            <div>
-              <label htmlFor="playerName" className="block text-sm font-semibold text-gray-700 mb-2">
-                Enter Your Name
-              </label>
-              <input
-                id="playerName"
-                type="text"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                placeholder="Your name here..."
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:border-yellow-500 focus:outline-none text-lg transition-colors"
-                maxLength={30}
-              />
-            </div>
+            {/* Player Name Input Block REMOVED */}
 
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-3">
@@ -78,7 +77,7 @@ export default function StartScreen({ onStart }: StartScreenProps) {
 
             <button
               onClick={handleStart}
-              disabled={!playerName.trim() || !selectedDifficulty}
+              disabled={!selectedDifficulty}
               className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 text-white py-4 rounded-xl font-bold text-xl hover:from-yellow-600 hover:to-orange-600 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transform hover:scale-105 disabled:hover:scale-100 transition-all duration-200 shadow-lg hover:shadow-xl flex items-center justify-center gap-2"
             >
               <Trophy className="w-6 h-6" />

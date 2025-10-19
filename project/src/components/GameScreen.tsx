@@ -1,8 +1,26 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Timer, Star, Heart, XCircle, CheckCircle } from 'lucide-react';
-import { DifficultyLevel } from '../lib/supabase';
-import { BananaPuzzle, fetchBananaPuzzle } from '../services/bananaApi';
-import LevelUpAnimation from './LevelUpAnimation';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { DifficultyLevel } from '../lib/supabaseClient';
+import { Clock, Ban, Zap, Banana, MonitorPlay, Timer, Brain, CheckCircle, RotateCcw } from 'lucide-react';
+
+// Define the icons used for the memory cards
+const GAME_ICONS = [
+  Banana, MonitorPlay, Clock, Zap, Brain, Ban, CheckCircle, RotateCcw
+];
+
+// Difficulty settings map (matches your StartScreen logic)
+const DIFFICULTY_SETTINGS: Record<DifficultyLevel, number> = {
+  easy: 30,
+  medium: 20,
+  hard: 10,
+};
+
+interface Card {
+  id: number; // Unique ID for keying
+  icon: typeof GAME_ICONS[0];
+  value: string; // Used for matching (icon name)
+  isFlipped: boolean;
+  isMatched: boolean;
+}
 
 interface GameScreenProps {
   playerName: string;
@@ -10,224 +28,260 @@ interface GameScreenProps {
   onGameEnd: (finalScore: number) => void;
 }
 
-const DIFFICULTY_CONFIG = {
-  easy: { time: 30, label: 'Easy', color: 'text-green-600' },
-  medium: { time: 20, label: 'Medium', color: 'text-yellow-600' },
-  hard: { time: 10, label: 'Hard', color: 'text-red-600' },
+// Function to initialize the cards based on difficulty
+const initializeCards = (difficulty: DifficultyLevel): Card[] => {
+  const numPairs = difficulty === 'hard' ? 6 : 8; // 8 pairs for easy/medium (16 cards)
+  const iconsToUse = GAME_ICONS.slice(0, numPairs);
+
+  const cardValues = [...iconsToUse, ...iconsToUse].map((Icon, index) => ({
+    id: index,
+    icon: Icon,
+    value: Icon.displayName || 'Icon',
+    isFlipped: false,
+    isMatched: false,
+  }));
+
+  // Simple Fisher-Yates shuffle algorithm
+  for (let i = cardValues.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cardValues[i], cardValues[j]] = [cardValues[j], cardValues[i]];
+  }
+
+  return cardValues;
 };
 
-type FeedbackType = 'correct' | 'incorrect' | null;
 
 export default function GameScreen({ playerName, difficulty, onGameEnd }: GameScreenProps) {
-  const [puzzle, setPuzzle] = useState<BananaPuzzle | null>(null);
-  const [userAnswer, setUserAnswer] = useState('');
+  const initialTime = DIFFICULTY_SETTINGS[difficulty];
+
+  const [cards, setCards] = useState<Card[]>(() => initializeCards(difficulty));
   const [score, setScore] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(DIFFICULTY_CONFIG[difficulty].time);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lives, setLives] = useState(3);
-  const [showLevelUp, setShowLevelUp] = useState(false);
-  const [currentLevel, setCurrentLevel] = useState(1);
-  const [feedback, setFeedback] = useState<FeedbackType>(null);
+  const [timeLeft, setTimeLeft] = useState(initialTime);
+  const [flippedIndices, setFlippedIndices] = useState<number[]>([]);
+  const [isGameActive, setIsGameActive] = useState(true);
+  const [message, setMessage] = useState('');
 
-  const loadNewPuzzle = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    setUserAnswer('');
-    setFeedback(null);
+  // Use a ref to track if the game has already been submitted to prevent multiple calls.
+  const submissionRef = useRef(false);
 
-    try {
-      const newPuzzle = await fetchBananaPuzzle();
-      setPuzzle(newPuzzle);
-      setTimeLeft(DIFFICULTY_CONFIG[difficulty].time);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load puzzle');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [difficulty]);
+  // Use refs to hold the current score and onGameEnd function for stable access
+  const scoreRef = useRef(score);
+  const onGameEndRef = useRef(onGameEnd);
+  
+  // Update refs when state/props change (stable effects)
+  useEffect(() => { scoreRef.current = score; }, [score]);
+  useEffect(() => { onGameEndRef.current = onGameEnd; }, [onGameEnd]);
+
+
+  // Check if the game is over (all cards matched)
+  const allMatched = useMemo(() => cards.every(card => card.isMatched), [cards]);
+
+  // --- 1. Timer Logic (Handles Time Out) ---
 
   useEffect(() => {
-    loadNewPuzzle();
-  }, [loadNewPuzzle]);
-
-  useEffect(() => {
-    if (timeLeft <= 0 || lives <= 0) {
-      onGameEnd(score);
+    // Stop the timer if the game is inactive (either by win or time-out)
+    if (!isGameActive || allMatched) {
       return;
     }
 
-    if (isLoading || showLevelUp) return;
-
     const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          setLives((l) => l - 1);
-          loadNewPuzzle();
-          return DIFFICULTY_CONFIG[difficulty].time;
+      setTimeLeft(prevTime => {
+        if (prevTime <= 1) {
+          clearInterval(timer);
+          // Only submit score if time runs out and hasn't been submitted (by win condition)
+          if (!submissionRef.current) {
+             submissionRef.current = true;
+             onGameEndRef.current(scoreRef.current); // Time ran out, submit current score
+             setMessage('Time Out! Game Over.');
+             setIsGameActive(false); // <--- Set inactive state *after* clearing interval
+          }
+          return 0;
         }
-        return prev - 1;
+        return prevTime - 1;
       });
     }, 1000);
 
+    // Clean up the timer when the effect resets
     return () => clearInterval(timer);
-  }, [timeLeft, lives, score, difficulty, isLoading, showLevelUp, onGameEnd, loadNewPuzzle]);
+    // FIX: Include allMatched so the effect cleans up instantly on win, preventing a race condition
+  }, [isGameActive, allMatched]); 
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  // --- 2. Matching Logic ---
 
-    if (!puzzle || userAnswer === '') return;
+  useEffect(() => {
+    // Only run if exactly two cards are flipped
+    if (flippedIndices.length === 2) {
+      setIsGameActive(false); // Temporarily pause game interaction
+      const [index1, index2] = flippedIndices;
+      const card1 = cards[index1];
+      const card2 = cards[index2];
 
-    const answer = parseInt(userAnswer, 10);
+      if (card1.value === card2.value) {
+        // Match found!
+        setScore(prevScore => prevScore + 10);
+        setMessage('Match found! +10 points!');
 
-    if (answer === puzzle.solution) {
-      setFeedback('correct');
-      const newScore = score + 1;
-      setScore(newScore);
+        setCards(prevCards => {
+          const newCards = [...prevCards];
+          newCards[index1] = { ...newCards[index1], isMatched: true };
+          newCards[index2] = { ...newCards[index2], isMatched: true };
+          return newCards;
+        });
 
-      if (newScore % 5 === 0) {
-        const newLevel = Math.floor(newScore / 5) + 1;
-        setCurrentLevel(newLevel);
-        setShowLevelUp(true);
+        setTimeout(() => {
+          setFlippedIndices([]);
+          setIsGameActive(true);
+          setMessage('');
+        }, 800);
+
+      } else {
+        // No match
+        setMessage('No match! Try again.');
+        setTimeout(() => {
+          // Flip them back over
+          setCards(prevCards => {
+            const newCards = [...prevCards];
+            newCards[index1] = { ...newCards[index1], isFlipped: false };
+            newCards[index2] = { ...newCards[index2], isFlipped: false };
+            return newCards;
+          });
+          setFlippedIndices([]);
+          setIsGameActive(true);
+          setMessage('');
+        }, 1200);
       }
-
-      setTimeout(() => {
-        if (!showLevelUp) {
-          loadNewPuzzle();
-        }
-      }, 800);
-    } else {
-      setFeedback('incorrect');
-      setLives((l) => l - 1);
-
-      setTimeout(() => {
-        loadNewPuzzle();
-      }, 800);
     }
-  };
+    // Dependencies: Only triggers when flipping/cards state changes.
+  }, [flippedIndices, cards]); 
 
-  const handleLevelUpComplete = () => {
-    setShowLevelUp(false);
-    loadNewPuzzle();
-  };
+  // --- 3. Game Over (Win Condition) Logic ---
+  useEffect(() => {
+    // This hook ensures onGameEnd is called exactly once when allMatched becomes true
+    if (allMatched && isGameActive && !submissionRef.current) {
+      // Game over, stop interaction, mark as submitted
+      setIsGameActive(false); // This will stop the timer via its dependency
+      submissionRef.current = true; 
+      
+      setMessage('CONGRATULATIONS! You matched all the bananas!');
+      // Access current score and function via refs
+      onGameEndRef.current(scoreRef.current + timeLeft); 
+    }
+    // Dependencies: Triggered when the win condition is met (allMatched) or time changes
+  }, [allMatched, isGameActive, timeLeft]); 
+  
+  // Clean up message on time out (moved the message setting to the timer cleanup)
+  // Removed the previous cleanup useEffect to prevent further conflicts.
 
-  const config = DIFFICULTY_CONFIG[difficulty];
+
+  const handleCardClick = useCallback((index: number) => {
+    if (!isGameActive || flippedIndices.includes(index) || cards[index].isMatched || flippedIndices.length === 2) {
+      return;
+    }
+
+    setCards(prevCards => {
+      const newCards = [...prevCards];
+      newCards[index] = { ...newCards[index], isFlipped: true };
+      return newCards;
+    });
+
+    setFlippedIndices(prevIndices => [...prevIndices, index]);
+
+  }, [isGameActive, flippedIndices, cards]);
+
+  // --- Render Helpers ---
+
+  const getTimerColor = () => {
+    if (timeLeft <= 5) return 'bg-red-500';
+    if (timeLeft <= 10) return 'bg-yellow-500';
+    return 'bg-green-500';
+  };
+  
+  const totalCards = cards.length;
+  // Grid setup: 16 cards -> 4x4. 12 cards -> 3x4 (smaller grid gap on mobile for 12 cards)
+  const gridColsClass = totalCards === 20 ? 'grid-cols-5 sm:grid-cols-5' : 'grid-cols-4 sm:grid-cols-4';
+  const gridGap = 'gap-2 md:gap-4';
+
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-400 via-cyan-400 to-blue-500 flex items-center justify-center p-4">
-      {showLevelUp && <LevelUpAnimation level={currentLevel} onComplete={handleLevelUpComplete} />}
-
-      <div className="max-w-3xl w-full">
-        <div className="bg-white rounded-3xl shadow-2xl p-8">
-          <div className="flex justify-between items-center mb-6">
-            <div>
-              <h2 className="text-2xl font-bold text-gray-800">{playerName}</h2>
-              <p className={`text-sm font-semibold ${config.color}`}>{config.label} Mode</p>
-            </div>
-
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2">
-                <Star className="w-6 h-6 text-yellow-500" fill="currentColor" />
-                <span className="text-3xl font-bold text-gray-800">{score}</span>
-              </div>
-
-              <div className="flex gap-1">
-                {[...Array(3)].map((_, i) => (
-                  <Heart
-                    key={i}
-                    className={`w-6 h-6 ${i < lives ? 'text-red-500' : 'text-gray-300'}`}
-                    fill={i < lives ? 'currentColor' : 'none'}
-                  />
-                ))}
-              </div>
-            </div>
+    <div className="min-h-screen bg-gray-100 p-4 sm:p-8 flex flex-col items-center">
+      
+      {/* Header and Status */}
+      <div className="w-full max-w-4xl bg-white p-4 rounded-xl shadow-lg mb-6">
+        <div className="flex justify-between items-center flex-wrap gap-4">
+          <div className="text-gray-700">
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <Banana className="w-5 h-5 text-yellow-600" />
+              Banana Brain Challenge
+            </h2>
+            <p className="text-sm font-medium capitalize text-gray-500">
+                Level: <span className={`font-semibold ${difficulty === 'hard' ? 'text-red-500' : difficulty === 'medium' ? 'text-yellow-500' : 'text-green-500'}`}>{difficulty}</span>
+            </p>
           </div>
-
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Timer className={`w-5 h-5 ${timeLeft <= 5 ? 'text-red-500 animate-pulse' : 'text-gray-600'}`} />
-                <span className={`text-2xl font-bold ${timeLeft <= 5 ? 'text-red-500' : 'text-gray-800'}`}>
-                  {timeLeft}s
-                </span>
-              </div>
-              <span className="text-sm text-gray-600">Level {currentLevel}</span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-              <div
-                className={`h-full transition-all duration-1000 ${
-                  timeLeft <= 5 ? 'bg-red-500' : 'bg-green-500'
-                }`}
-                style={{ width: `${(timeLeft / config.time) * 100}%` }}
-              />
-            </div>
+          
+          <div className="flex items-center gap-6">
+             <div className="text-center">
+                <p className="text-lg font-bold text-gray-800">{score}</p>
+                <p className="text-xs text-gray-500">Score</p>
+             </div>
+             
+             <div className="text-center">
+                <p className="text-lg font-bold text-gray-800">{cards.filter(c => c.isMatched).length} / {totalCards / 2}</p>
+                <p className="text-xs text-gray-500">Matches</p>
+             </div>
           </div>
-
-          {error ? (
-            <div className="text-center py-12">
-              <p className="text-red-600 mb-4">{error}</p>
-              <button
-                onClick={loadNewPuzzle}
-                className="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 transition-colors"
-              >
-                Try Again
-              </button>
-            </div>
-          ) : isLoading ? (
-            <div className="text-center py-12">
-              <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-500 mx-auto" />
-              <p className="mt-4 text-gray-600">Loading puzzle...</p>
-            </div>
-          ) : puzzle ? (
-            <div>
-              <div className="bg-gray-100 rounded-2xl p-6 mb-6 relative overflow-hidden">
-                {feedback === 'correct' && (
-                  <div className="absolute inset-0 bg-green-500 bg-opacity-20 flex items-center justify-center animate-fadeIn">
-                    <CheckCircle className="w-24 h-24 text-green-600 animate-scaleIn" />
-                  </div>
-                )}
-                {feedback === 'incorrect' && (
-                  <div className="absolute inset-0 bg-red-500 bg-opacity-20 flex items-center justify-center animate-fadeIn">
-                    <XCircle className="w-24 h-24 text-red-600 animate-scaleIn" />
-                  </div>
-                )}
-
-                <h3 className="text-center text-lg font-semibold text-gray-700 mb-4">
-                  What number is hidden behind the banana?
-                </h3>
-                <div className="flex justify-center">
-                  <img
-                    src={puzzle.question}
-                    alt="Banana puzzle"
-                    className="max-w-full h-auto rounded-lg shadow-md"
-                  />
-                </div>
-              </div>
-
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <input
-                  type="number"
-                  value={userAnswer}
-                  onChange={(e) => setUserAnswer(e.target.value)}
-                  placeholder="Enter your answer (0-9)"
-                  className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none text-2xl text-center font-bold transition-colors"
-                  min="0"
-                  max="9"
-                  autoFocus
-                  disabled={feedback !== null}
-                />
-                <button
-                  type="submit"
-                  disabled={userAnswer === '' || feedback !== null}
-                  className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-4 rounded-xl font-bold text-xl hover:from-blue-600 hover:to-cyan-600 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transform hover:scale-105 disabled:hover:scale-100 transition-all duration-200 shadow-lg"
-                >
-                  Submit Answer
-                </button>
-              </form>
-            </div>
-          ) : null}
+          
+          {/* Timer */}
+          <div className={`flex items-center text-white p-3 rounded-lg font-bold shadow-md ${getTimerColor()}`}>
+            <Timer className="w-5 h-5 mr-2" />
+            <span className="text-2xl w-8 text-right">{timeLeft}s</span>
+          </div>
         </div>
       </div>
+      
+      {/* Message Area */}
+      {message && (
+        <div className={`w-full max-w-4xl p-3 text-center rounded-lg mb-6 text-white font-semibold shadow-md ${message.includes('Match found') ? 'bg-green-600' : message.includes('No match') ? 'bg-red-500' : message.includes('Time Out') || message.includes('CONGRATULATIONS') ? 'bg-indigo-600' : 'bg-blue-500'}`}>
+          {message}
+        </div>
+      )}
+
+      {/* Game Grid */}
+      <div className={`w-full max-w-4xl grid ${gridColsClass} ${gridGap} aspect-square`}>
+        {cards.map((card, index) => (
+          <div
+            key={card.id}
+            className={`perspective-1000 w-full h-full cursor-pointer transition-all duration-300 transform hover:scale-[1.03] ${!isGameActive || card.isMatched || flippedIndices.length === 2 ? 'pointer-events-none' : ''}`}
+            onClick={() => handleCardClick(index)}
+          >
+            <div 
+              className={`relative preserve-3d w-full h-full rounded-xl shadow-lg transition-transform duration-500 ${card.isFlipped ? 'rotate-y-180' : ''}`}
+              style={{ transformStyle: 'preserve-3d' as 'preserve-3d' }}
+            >
+              
+              {/* Card Back (Hidden/Front Side) */}
+              <div 
+                className={`absolute backface-hidden w-full h-full flex items-center justify-center rounded-xl transition-colors duration-200 ${card.isMatched ? 'bg-yellow-300' : 'bg-yellow-500 hover:bg-yellow-600'}`}
+              >
+                <Brain className="w-10 h-10 text-white" />
+              </div>
+              
+              {/* Card Face (Icon/Back Side) */}
+              <div 
+                className={`absolute backface-hidden rotate-y-180 w-full h-full flex items-center justify-center rounded-xl bg-white border-4 ${card.isMatched ? 'border-yellow-300' : 'border-yellow-500'}`}
+              >
+                {/* Dynamically render the icon component */}
+                <card.icon 
+                    className={`w-1/2 h-1/2 transition-opacity duration-300 ${card.isMatched ? 'text-gray-400 opacity-60' : 'text-gray-800'}`} 
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      
+      <p className="mt-8 text-sm text-gray-500">
+        You are playing as: <span className="font-semibold text-gray-700">{playerName}</span>
+      </p>
     </div>
   );
 }
